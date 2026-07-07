@@ -1076,6 +1076,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE": lambda: bool(
         int(os.getenv("VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE", "1"))
     ),
+    "VLLM_GDN_PREFIX_STORE_REMAINING_THRESHOLD": lambda: int(
+        os.getenv("VLLM_GDN_PREFIX_STORE_REMAINING_THRESHOLD", "-1")
+    ),
     # Disable pynccl (using torch.distributed instead)
     "VLLM_DISABLE_PYNCCL": lambda: (
         os.getenv("VLLM_DISABLE_PYNCCL", "False").lower() in ("true", "1")

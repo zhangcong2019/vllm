@@ -1465,6 +1465,11 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             initial_state = ssm_state[non_spec_state_indices_tensor].contiguous()  # type: ignore[index]
             assert has_initial_state is not None
             initial_state[~has_initial_state, ...] = 0  # type: ignore[operator]
+
+            # print(f"initial_state.shape: {initial_state.shape}")
+            # print(f"initial_state.value: {initial_state[0, 0].reshape(-1)[:3]}")
+            # initial_state = torch.zeros_like(initial_state)  # TODO: remove this line when the kernel is fixed
+
             (
                 core_attn_out_non_spec,
                 last_recurrent_state,
@@ -1481,10 +1486,59 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 chunk_offsets=attn_metadata.chunk_offsets,
                 use_qk_l2norm_in_kernel=False,
             )
+
+            remaining_prefix_tokens = attn_metadata.num_prefill_tokens
+            decoded_tokens = attn_metadata.num_decode_tokens
+            processed_tokens = num_actual_tokens
+            print(
+                "gdn prefill counters: "
+                f"remaining_prefix_tokens={remaining_prefix_tokens}, "
+                f"decoded_tokens={decoded_tokens}, "
+                f"processed_tokens={processed_tokens}"
+            )
+            # non_spec_state_indices_tensor / prefix_*_cpu are per-request
+            # (one entry per non-spec request), unlike num_actual_tokens which
+            # counts tokens. Index the trigger tensors by request count.
+            active_slots = non_spec_state_indices_tensor.unique()
+
+            prefix_store_trigger_cpu = attn_metadata.prefix_store_trigger_cpu
+            if prefix_store_trigger_cpu is not None and prefix_store_trigger_cpu.any():
+                num_non_spec_reqs = prefix_store_trigger_cpu.shape[0]
+                prefix_store_trigger = prefix_store_trigger_cpu.to(
+                    non_spec_state_indices_tensor.device,
+                    non_blocking=True,
+                )
+                active_state_indices = non_spec_state_indices_tensor[
+                    :num_non_spec_reqs
+                ]
+                triggered_slots = active_state_indices[prefix_store_trigger]
+                processed_prefix_tokens = attn_metadata.prefix_processed_tokens_cpu
+                remaining_prefix_tokens = attn_metadata.prefix_remaining_tokens_cpu
+                if (
+                    processed_prefix_tokens is not None
+                    and remaining_prefix_tokens is not None
+                ):
+                    print(
+                        "gdn prefix store trigger: "
+                        f"layer={self.prefix}, "
+                        f"active_slots={triggered_slots.detach().cpu().tolist()}, "
+                        f"processed_prefix_tokens="
+                        f"{processed_prefix_tokens[prefix_store_trigger_cpu].tolist()}, "
+                        f"remaining_prefix_tokens="
+                        f"{remaining_prefix_tokens[prefix_store_trigger_cpu].tolist()}"
+                    )
+
             # Init cache
             ssm_state[non_spec_state_indices_tensor] = last_recurrent_state.to(
                 ssm_state.dtype
             )
+            # ssm_state_temp = ssm_state[active_slots].detach().cpu()
+            # if "layers.0" in str(self.prefix):
+            #     print(f"[{self.prefix}] ssm_state.shape after: ", ssm_state_temp.shape)
+            #     print(
+            #         f"[{self.prefix}] ssm_state.value after: ",
+            #         ssm_state_temp[0, 0].reshape(-1)[:3],
+            #     )
         elif attn_metadata.num_decodes > 0:
             core_attn_out_non_spec, last_recurrent_state = (
                 fused_sigmoid_gating_delta_rule_update(
@@ -1629,6 +1683,42 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             validate_data=False,
         )
         out_buf = core_attn_out[:num_actual_tokens].unsqueeze(1)
+        remaining_prefix_tokens = attn_metadata.num_prefill_tokens
+        decoded_tokens = attn_metadata.num_decode_tokens
+        processed_tokens = num_actual_tokens
+        print(
+            "gdn decode counters: "
+            f"remaining_prefix_tokens={remaining_prefix_tokens}, "
+            f"decoded_tokens={decoded_tokens}, "
+            f"processed_tokens={processed_tokens}"
+        )
+        active_slots = non_spec_state_indices_tensor[:num_actual_tokens].unique()
+        # print("active_slots: ", active_slots.cpu())
+        # print("ssm_state.shape before: ", ssm_state[active_slots].shape)
+        # print("ssm_state.value before: ", ssm_state[active_slots].detach().cpu()[:3])
+
+        prefix_store_trigger_cpu = attn_metadata.prefix_store_trigger_cpu
+        if prefix_store_trigger_cpu is not None and prefix_store_trigger_cpu.any():
+            prefix_store_trigger = prefix_store_trigger_cpu.to(
+                non_spec_state_indices_tensor.device,
+                non_blocking=True,
+            )[:num_actual_tokens]
+            active_state_indices = non_spec_state_indices_tensor[:num_actual_tokens]
+            triggered_slots = active_state_indices[prefix_store_trigger]
+            processed_prefix_tokens = attn_metadata.prefix_processed_tokens_cpu
+            remaining_prefix_tokens = attn_metadata.prefix_remaining_tokens_cpu
+            if processed_prefix_tokens is not None and remaining_prefix_tokens is not None:
+                active_trigger_cpu = prefix_store_trigger_cpu[:num_actual_tokens]
+                print(
+                    "gdn prefix store trigger: "
+                    f"layer={self.prefix}, "
+                    f"active_slots={triggered_slots.detach().cpu().tolist()}, "
+                    f"processed_prefix_tokens="
+                    f"{processed_prefix_tokens[:num_actual_tokens][active_trigger_cpu].tolist()}, "
+                    f"remaining_prefix_tokens="
+                    f"{remaining_prefix_tokens[:num_actual_tokens][active_trigger_cpu].tolist()}"
+                )
+
         fused_recurrent_gated_delta_rule_packed_decode(
             mixed_qkv=mixed_qkv_non_spec,
             a=a,
@@ -1641,6 +1731,13 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             ssm_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
             use_qk_l2norm_in_kernel=True,
         )
+        # ssm_state_temp = ssm_state[active_slots].detach().cpu()
+        # if "layers.0" in str(self.prefix):
+        #     print(f"[{self.prefix}] ssm_state.shape after: ", ssm_state_temp.shape)
+        #     print(
+        #         f"[{self.prefix}] ssm_state.value after: ",
+        #         ssm_state_temp[0, 0].reshape(-1)[:3],
+        #     )
         return
 
 

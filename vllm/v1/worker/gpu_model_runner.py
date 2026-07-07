@@ -2272,6 +2272,39 @@ class GPUModelRunner(
         # misclassify padding as prefill in CUDA graph mode.
         is_prefilling[num_reqs:] = False
 
+        scheduled_tokens_cpu = torch.zeros_like(num_computed_tokens_cpu)
+        # ``num_scheduled_tokens`` (the arg) is the ``dict[req_id, int]`` from
+        # ``scheduler_output`` and is ``None`` during dummy/CUDA-graph capture.
+        # Use the per-request int32 buffer populated in ``_prepare_inputs``.
+        scheduled_tokens_cpu[:num_reqs] = torch.from_numpy(
+            self.num_scheduled_tokens.np[:num_reqs]
+        ).to(dtype=scheduled_tokens_cpu.dtype)
+        prefix_processed_tokens_cpu = torch.minimum(
+            num_computed_tokens_cpu + scheduled_tokens_cpu,
+            num_prompt_tokens_cpu,
+        )
+        prefix_remaining_tokens_cpu = torch.clamp(
+            num_prompt_tokens_cpu - prefix_processed_tokens_cpu,
+            min=0,
+        )
+        prefix_remaining_before_cpu = torch.clamp(
+            num_prompt_tokens_cpu - num_computed_tokens_cpu,
+            min=0,
+        )
+        gdn_prefix_store_remaining_threshold = (
+            envs.VLLM_GDN_PREFIX_STORE_REMAINING_THRESHOLD
+        )
+        if gdn_prefix_store_remaining_threshold >= 0:
+            prefix_store_trigger_cpu = (
+                is_prefilling
+                & (prefix_remaining_before_cpu > gdn_prefix_store_remaining_threshold)
+                & (prefix_remaining_tokens_cpu <= gdn_prefix_store_remaining_threshold)
+            )
+            prefix_store_trigger_cpu[num_reqs:] = False
+        else:
+            prefix_store_trigger_cpu = torch.zeros_like(is_prefilling)
+        print("building attention meta")
+
         if self.use_async_spec_decode:
             # GPU tensors are authoritative in async mode.
             seq_lens_cpu = None
@@ -2292,6 +2325,9 @@ class GPUModelRunner(
             slot_mapping=slot_mapping_gid_0,
             causal=True,
             is_prefilling=is_prefilling,
+            prefix_processed_tokens_cpu=prefix_processed_tokens_cpu,
+            prefix_remaining_tokens_cpu=prefix_remaining_tokens_cpu,
+            prefix_store_trigger_cpu=prefix_store_trigger_cpu,
             positions=self.positions[:num_tokens_padded],
         )
 

@@ -402,6 +402,18 @@ class CommonAttentionMetadata:
     (num_computed_tokens < num_prompt_tokens). Used by some backends to
     distinguish actual decodes from short extends."""
 
+    prefix_processed_tokens_cpu: torch.Tensor | None = None
+    """(batch_size,) CPU tensor with per-request prompt tokens processed after
+    the current scheduled step."""
+
+    prefix_remaining_tokens_cpu: torch.Tensor | None = None
+    """(batch_size,) CPU tensor with per-request prompt tokens remaining after
+    the current scheduled step."""
+
+    prefix_store_trigger_cpu: torch.Tensor | None = None
+    """(batch_size,) CPU bool tensor set when a request crosses the configured
+    prefix-remaining threshold in the current scheduled step."""
+
     seq_lens_cpu_upper_bound: torch.Tensor | None = None
     """(batch_size,) CPU upper bound on seq_lens. Precise for prefill rows
     and for all rows outside async spec decode; optimistic for async-spec
@@ -490,6 +502,13 @@ class CommonAttentionMetadata:
             dcp_local_seq_lens=maybe_slice_reqs(self.dcp_local_seq_lens),
             dcp_local_seq_lens_cpu=maybe_slice_reqs(self.dcp_local_seq_lens_cpu),
             is_prefilling=maybe_slice_reqs(self.is_prefilling),
+            prefix_processed_tokens_cpu=maybe_slice_reqs(
+                self.prefix_processed_tokens_cpu
+            ),
+            prefix_remaining_tokens_cpu=maybe_slice_reqs(
+                self.prefix_remaining_tokens_cpu
+            ),
+            prefix_store_trigger_cpu=maybe_slice_reqs(self.prefix_store_trigger_cpu),
         )
 
 

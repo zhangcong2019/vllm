@@ -64,6 +64,10 @@ class GDNAttentionMetadata:
 
     num_accepted_tokens: torch.Tensor | None = None  # shape: [batch,]
 
+    prefix_processed_tokens_cpu: torch.Tensor | None = None  # shape: [batch,]
+    prefix_remaining_tokens_cpu: torch.Tensor | None = None  # shape: [batch,]
+    prefix_store_trigger_cpu: torch.Tensor | None = None  # shape: [batch,]
+
     # Pre-computed FLA chunk metadata (avoids GPU->CPU sync in prepare_chunk_indices)
     chunk_indices: torch.Tensor | None = None
     chunk_offsets: torch.Tensor | None = None
@@ -180,6 +184,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             self.kv_cache_spec,
             self.vllm_config.cache_config.mamba_cache_mode,
         )
+        prefix_processed_tokens_cpu = m.prefix_processed_tokens_cpu
+        prefix_remaining_tokens_cpu = m.prefix_remaining_tokens_cpu
+        prefix_store_trigger_cpu = m.prefix_store_trigger_cpu
 
         spec_sequence_masks_cpu: torch.Tensor | None = None
         if (
@@ -319,6 +326,18 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
 
             assert num_accepted_tokens is not None
             num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
+            if prefix_processed_tokens_cpu is not None:
+                prefix_processed_tokens_cpu = prefix_processed_tokens_cpu[
+                    ~spec_sequence_masks_cpu
+                ]
+            if prefix_remaining_tokens_cpu is not None:
+                prefix_remaining_tokens_cpu = prefix_remaining_tokens_cpu[
+                    ~spec_sequence_masks_cpu
+                ]
+            if prefix_store_trigger_cpu is not None:
+                prefix_store_trigger_cpu = prefix_store_trigger_cpu[
+                    ~spec_sequence_masks_cpu
+                ]
 
         chunk_indices: torch.Tensor | None = None
         chunk_offsets: torch.Tensor | None = None
@@ -466,6 +485,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             spec_token_indx=spec_token_indx,
             non_spec_token_indx=non_spec_token_indx,
             num_accepted_tokens=num_accepted_tokens,
+            prefix_processed_tokens_cpu=prefix_processed_tokens_cpu,
+            prefix_remaining_tokens_cpu=prefix_remaining_tokens_cpu,
+            prefix_store_trigger_cpu=prefix_store_trigger_cpu,
             nums_dict=nums_dict,
             batch_ptr=batch_ptr,
             token_chunk_offset_ptr=token_chunk_offset_ptr,
