@@ -2303,7 +2303,6 @@ class GPUModelRunner(
             prefix_store_trigger_cpu[num_reqs:] = False
         else:
             prefix_store_trigger_cpu = torch.zeros_like(is_prefilling)
-        print("building attention meta")
 
         if self.use_async_spec_decode:
             # GPU tensors are authoritative in async mode.

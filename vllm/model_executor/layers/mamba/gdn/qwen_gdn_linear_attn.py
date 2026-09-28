@@ -65,6 +65,7 @@ from vllm.utils.torch_utils import (
     direct_register_custom_op,
 )
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
+import vllm.model_executor.layers.mamba.gdn.hadamard as hadamard
 
 # Optional ROCm AITER Triton kernels for the GDN decode fast-path.
 # Availability is checked centrally via rocm_aiter_ops; the actual function
@@ -98,7 +99,24 @@ def _record_compression_rate(name: str, compression_rate: float) -> None:
     )
 
 def reconsturct(selected: torch.Tensor) -> torch.Tensor:
-    return reconsturct_svd_quant(selected)
+    # print("reconstructing")
+    return reconsturct_hadamard_quant(selected)
+    # return reconsturct_svd_quant(selected)
+    # return reconsturct_int8_quant(selected)
+    # return reconsturct_uint4_quant(selected)
+
+def reconsturct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
+    """Round-trip a tensor through Hadamard quantization and write it back in place."""
+    q, scale, zero_point = hadamard.hadamard_int4_quantize(selected)
+
+    reconstructed = hadamard.hadamard_int4_dequantize(q, scale, zero_point)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
+    # selected.copy_(torch.zeros_like(selected))
+    
+    compression_rate = 4.0 / 32.0  # int4 uses 4 bits per element
+    _record_compression_rate("hadamard", compression_rate)
+    # print("hadamard reconstruction complete")
+    return selected
 
 def reconsturct_fp8_quant(selected: torch.Tensor) -> torch.Tensor:
     """Round-trip a tensor through FP8 e4m3 and write it back in place.
@@ -208,7 +226,7 @@ def reconsturct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
     This is useful for estimating the numerical effect of storing a state
     matrix in SVD and reconstructing it back to the original dtype.
     """
-    APPROX_RANK_ENERGY_THRESHOLD = 0.95
+    APPROX_RANK_ENERGY_THRESHOLD = 0.99
     source = selected.float()
 
     if source.ndim != 2:
@@ -1661,7 +1679,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 use_qk_l2norm_in_kernel=False,
             )
 
-            remaining_prefix_tokens = attn_metadata.num_prefill_tokens
+            # remaining_prefix_tokens = attn_metadata.num_prefill_tokens
             # decoded_tokens = attn_metadata.num_decode_tokens
             # processed_tokens = num_actual_tokens
             # print(
@@ -1703,15 +1721,15 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                             f"{list(last_recurrent_state.shape)}"
                         )
                     
-                    print(
-                        "gdn prefix store trigger (shape check failed): "
-                        f"layer={self.prefix}, "
-                        f"active_slots={triggered_slots.detach().cpu().tolist()}, "
-                        f"processed_prefix_tokens="
-                        f"{processed_prefix_tokens[prefix_store_trigger_cpu].tolist()}, "
-                        f"remaining_prefix_tokens="
-                        f"{remaining_prefix_tokens[prefix_store_trigger_cpu].tolist()}"
-                    )
+                    # print(
+                    #     "gdn prefix store trigger (shape check failed): "
+                    #     f"layer={self.prefix}, "
+                    #     f"active_slots={triggered_slots.detach().cpu().tolist()}, "
+                    #     f"processed_prefix_tokens="
+                    #     f"{processed_prefix_tokens[prefix_store_trigger_cpu].tolist()}, "
+                    #     f"remaining_prefix_tokens="
+                    #     f"{remaining_prefix_tokens[prefix_store_trigger_cpu].tolist()}"
+                    # )
 
                     for b_idx in range(last_recurrent_state.shape[0]):
                         for h_idx in range(last_recurrent_state.shape[1]):
