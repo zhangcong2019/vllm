@@ -65,7 +65,7 @@ from vllm.utils.torch_utils import (
     direct_register_custom_op,
 )
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
-import vllm.model_executor.layers.mamba.gdn.hadamard as hadamard
+from .compress import reconstruct_qwen
 
 # Optional ROCm AITER Triton kernels for the GDN decode fast-path.
 # Availability is checked centrally via rocm_aiter_ops; the actual function
@@ -83,198 +83,6 @@ if GDN_AITER_TRITON_AVAILABLE:
 
 logger = init_logger(__name__)
 
-_compression_rate_total = 0.0
-_compression_rate_count = 0
-
-
-def _record_compression_rate(name: str, compression_rate: float) -> None:
-    global _compression_rate_count, _compression_rate_total
-    _compression_rate_total += float(compression_rate)
-    _compression_rate_count += 1
-    average_compression_rate = _compression_rate_total / _compression_rate_count
-    print(
-        f"{name} compression_rate={compression_rate:.4g} "
-        f"average_compression_rate={average_compression_rate:.4g} "
-        f"count={_compression_rate_count}"
-    )
-
-def reconsturct(selected: torch.Tensor) -> torch.Tensor:
-    # print("reconstructing")
-    return reconsturct_hadamard_quant(selected)
-    # return reconsturct_svd_quant(selected)
-    # return reconsturct_int8_quant(selected)
-    # return reconsturct_uint4_quant(selected)
-
-def reconsturct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
-    """Round-trip a tensor through Hadamard quantization and write it back in place."""
-    q, scale, zero_point = hadamard.hadamard_int4_quantize(selected)
-
-    reconstructed = hadamard.hadamard_int4_dequantize(q, scale, zero_point)
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
-    # selected.copy_(torch.zeros_like(selected))
-    
-    compression_rate = 4.0 / 32.0  # int4 uses 4 bits per element
-    _record_compression_rate("hadamard", compression_rate)
-    # print("hadamard reconstruction complete")
-    return selected
-
-def reconsturct_fp8_quant(selected: torch.Tensor) -> torch.Tensor:
-    """Round-trip a tensor through FP8 e4m3 and write it back in place.
-
-    The misspelled function name is kept to match the existing call site.
-    This is useful for estimating the numerical effect of storing a state
-    matrix in FP8 and reconstructing it back to the original dtype.
-    """
-    source = selected.float()
-    fp8_dtype = torch.float8_e4m3fn
-    finfo = torch.finfo(fp8_dtype)
-    amax = source.abs().max().clamp(min=1e-12)
-    scale = finfo.max / amax
-    fp8 = (source * scale).clamp(finfo.min, finfo.max).to(fp8_dtype)
-    reconstructed = fp8.float() / scale
-
-    error = reconstructed - source
-    mse = torch.mean(error.square()).item()
-    denom = torch.linalg.norm(source).item()
-    rel_recon_error = (
-        torch.linalg.norm(error).item() / denom if denom != 0.0 else 0.0
-    )
-    compression_rate = 8.0 / 32.0
-    _record_compression_rate("fp8", compression_rate)
-    # print(
-    #     "fp8 reconstruction: "
-    #     f"mse={mse:.8g} "
-    #     f"relative_reconstruction_error={rel_recon_error:.8g} "
-    #     f"compression_rate={compression_rate:.4g}"
-    # )
-
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
-    return selected
-
-def reconsturct_int8_quant(selected: torch.Tensor) -> torch.Tensor:
-    """Round-trip a tensor through INT8 and write it back in place.
-
-    The misspelled function name is kept to match the existing call site.
-    This is useful for estimating the numerical effect of storing a state
-    matrix in INT8 and reconstructing it back to the original dtype.
-    """
-    source = selected.float()
-    int8_info = torch.iinfo(torch.int8)
-    x_min = source.min()
-    x_max = source.max()
-    scale = ((x_max - x_min) / float(int8_info.max - int8_info.min)).clamp(min=1e-12)
-    zero_point = (int8_info.min - x_min / scale).round().clamp(int8_info.min, int8_info.max)
-    q_int8 = (source / scale + zero_point).round().clamp(int8_info.min, int8_info.max).to(torch.int8)
-    reconstructed = (q_int8.float() - zero_point) * scale
-
-    error = reconstructed - source
-    mse = torch.mean(error.square()).item()
-    denom = torch.linalg.norm(source).item()
-    rel_recon_error = (
-        torch.linalg.norm(error).item() / denom if denom != 0.0 else 0.0
-    )
-    compression_rate = 8.0 / 32.0
-    _record_compression_rate("int8", compression_rate)
-    # print(
-    #     "int8 reconstruction: "
-    #     f"mse={mse:.8g} "
-    #     f"relative_reconstruction_error={rel_recon_error:.8g} "
-    #     f"compression_rate={compression_rate:.4g}"
-    # )
-
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
-    return selected
-
-def reconsturct_uint4_quant(selected: torch.Tensor) -> torch.Tensor:
-    """Round-trip a tensor through UINT4 and write it back in place.
-
-    The misspelled function name is kept to match the existing call site.
-    This is useful for estimating the numerical effect of storing a state
-    matrix in UINT4 and reconstructing it back to the original dtype.
-    """
-    source = selected.float()
-    qmin, qmax = 0.0, 15.0
-    x_min = source.min()
-    x_max = source.max()
-    scale = ((x_max - x_min) / (qmax - qmin)).clamp(min=1e-12)
-    zero_point = (qmin - x_min / scale).round().clamp(qmin, qmax)
-    q_uint4 = (source / scale + zero_point).round().clamp(qmin, qmax)
-    reconstructed = (q_uint4 - zero_point) * scale
-
-    error = reconstructed - source
-    mse = torch.mean(error.square()).item()
-    denom = torch.linalg.norm(source).item()
-    rel_recon_error = (
-        torch.linalg.norm(error).item() / denom if denom != 0.0 else 0.0
-    )
-    compression_rate = 4.0 / 32.0
-    _record_compression_rate("uint4", compression_rate)
-    # print(
-    #     "uint4 reconstruction: "
-    #     f"mse={mse:.8g} "
-    #     f"relative_reconstruction_error={rel_recon_error:.8g} "
-    #     f"compression_rate={compression_rate:.4g}"
-    # )
-
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
-    return selected
-
-def reconsturct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
-    """Round-trip a tensor through SVD and write it back in place.
-
-    The misspelled function name is kept to match the existing call site.
-    This is useful for estimating the numerical effect of storing a state
-    matrix in SVD and reconstructing it back to the original dtype.
-    """
-    APPROX_RANK_ENERGY_THRESHOLD = 0.99
-    source = selected.float()
-
-    if source.ndim != 2:
-        raise SystemExit(
-            f"SVD roundtrip expects a 2D matrix after head selection, found shape {list(source.shape)}"
-        )
-
-    u, singular_values, vh = torch.linalg.svd(source, full_matrices=False)
-    if singular_values.numel() == 0:
-        reconstructed = source.clone()
-        retained_rank = 0
-    else:
-        energy = singular_values.square()
-        total_energy = energy.sum()
-        if float(total_energy.item()) == 0.0:
-            retained_rank = 0
-            reconstructed = torch.zeros_like(source)
-        else:
-            cumulative_energy = torch.cumsum(energy, dim=0) / total_energy
-            retained_rank = int(torch.searchsorted(cumulative_energy, APPROX_RANK_ENERGY_THRESHOLD).item()) + 1
-            u_q = u[:, :retained_rank].to(torch.float8_e4m3fn).to(source.dtype)
-            vh_q = vh[:retained_rank, :].to(torch.float8_e4m3fn).to(source.dtype)
-            reconstructed = u_q @ torch.diag(singular_values[:retained_rank].to(torch.float16).to(source.dtype)) @ vh_q
-
-    error = reconstructed - source
-    mse = torch.mean(error.square()).item()
-    denom = torch.linalg.norm(source).item()
-    rel_recon_error = (
-        torch.linalg.norm(error).item() / denom if denom != 0.0 else 0.0
-    )
-
-    rows, cols = source.shape
-    source_bits = rows * cols * 32
-    compressed_bits = retained_rank * rows * 8 + retained_rank * cols * 8 + retained_rank * 16
-    compression_rate = (compressed_bits / source_bits)
-    _record_compression_rate("svd", compression_rate)
-
-
-
-    # print(
-    #     "SVD reconstruction: "
-    #     f"mse={mse:.8g} "
-    #     f"relative_reconstruction_error={rel_recon_error:.8g} "
-    #     f"compression_rate={compression_rate:.4g}"
-    # )
-
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
-    return selected
 # TODO(arpera): remove ``_is_libs_cu13_install_intact`` and its caller in
 # ``_resolve_gdn_prefill_backend`` once the upstream packaging bug is
 # fixed and the broken wheels are yanked / superseded on PyPI:
@@ -1736,7 +1544,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                             recurrent_state_mm = last_recurrent_state[b_idx, h_idx]
                             # recurrent_state_mm.zero_()  # TODO: remove this line when the kernel is fixed
                             # last_recurrent_state[b_idx, h_idx] = torch.zeros_like(recurrent_state_mm)  # TODO: remove this line when the kernel is fixed
-                            last_recurrent_state[b_idx, h_idx] = reconsturct(recurrent_state_mm)
+                            last_recurrent_state[b_idx, h_idx] = reconstruct_qwen(recurrent_state_mm)
 
             # print("after gdn prefill: last_recurrent_state.shape: ", last_recurrent_state.shape)
             # print("after gdn prefill: last_recurrent_state.dtype: ", last_recurrent_state.dtype)

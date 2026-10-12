@@ -36,6 +36,7 @@ from ..mamba_utils import (
     is_conv_state_dim_first,
 )
 from ..ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+from .compress import reconstruct_kimi
 
 logger = init_logger(__name__)
 
@@ -412,6 +413,13 @@ class KimiGatedDeltaNetAttention(GatedDeltaNetAttention):
                 use_qk_l2norm_in_kernel=True,
                 cu_seqlens=non_spec_query_start_loc,
             )
+            prefix_store_trigger_cpu = attn_metadata_narrowed.prefix_store_trigger_cpu
+            if prefix_store_trigger_cpu is not None and prefix_store_trigger_cpu.any():
+                prefix_store_trigger = prefix_store_trigger_cpu.to(
+                    last_recurrent_state.device, non_blocking=True
+                )
+                selected = last_recurrent_state[prefix_store_trigger]
+                last_recurrent_state[prefix_store_trigger] = reconstruct_kimi(selected)
             # Init cache
             recurrent_state[non_spec_state_indices_tensor] = last_recurrent_state
         else:
