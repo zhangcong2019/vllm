@@ -27,6 +27,16 @@ def _record_compression_rate(name: str, compression_rate: float) -> None:
     )
 
 
+def _print_frobenius_error(source: torch.Tensor, reconstructed: torch.Tensor) -> None:
+    reference_norm = torch.linalg.vector_norm(source.float())
+    error_norm = torch.linalg.vector_norm(source.float() - reconstructed.float())
+    if reference_norm.item() == 0:
+        error_percent = 0.0 if error_norm.item() == 0 else float("inf")
+    else:
+        error_percent = (100 * error_norm / reference_norm).item()
+    print(f"frobenius_error={error_percent:.4g}%")
+
+
 def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     print("Reconstructing Qwen tensor")
     
@@ -45,7 +55,7 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning svd + quant tensor")
     # return reconstruct_svd_quant(selected)
 
-    print("Returning svd fp8 tensor")
+    print("Returning svd 099 fp8 tensor")
     return reconstruct_svd_fp8(selected)
 
     # print("Returning int4 tensor")
@@ -158,6 +168,8 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
     compression_rate = compressed_bits / source_bits
     print("average bit", compressed_bits / (rows * cols))
     _record_compression_rate("svd", compression_rate)
+    _print_frobenius_error(source, reconstructed)
+    print("retained rank:", retained_rank)
 
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
@@ -165,7 +177,7 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
 
 
 def reconstruct_svd_fp8(selected: torch.Tensor) -> torch.Tensor:
-    approx_rank_energy_threshold = 0.999
+    approx_rank_energy_threshold = 0.99
     source = selected.float()
 
     if source.ndim != 2:
@@ -209,6 +221,8 @@ def reconstruct_svd_fp8(selected: torch.Tensor) -> torch.Tensor:
     compressed_bits = retained_rank * rows * 8 + retained_rank * cols * 8 + retained_rank * 16
     compression_rate = compressed_bits / source_bits
     _record_compression_rate("svd", compression_rate)
+    _print_frobenius_error(source, reconstructed)
+    print("retained rank:", retained_rank)
 
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
