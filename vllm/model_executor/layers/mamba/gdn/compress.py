@@ -34,7 +34,7 @@ def _print_frobenius_error(source: torch.Tensor, reconstructed: torch.Tensor) ->
         error_percent = 0.0 if error_norm.item() == 0 else float("inf")
     else:
         error_percent = (100 * error_norm / reference_norm).item()
-    print(f"frobenius_error={error_percent:.4g}%")
+    print(f"frobenius_error={error_percent:.4g}%, absolute error={error_norm.item():.4g}")
 
 
 def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
@@ -52,11 +52,11 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning hadamard-int2 tensor")
     # return reconstruct_hadamard_quant(selected)
 
-    # print("Returning svd + quant tensor")
-    # return reconstruct_svd_quant(selected)
+    print("Returning svd + quant tensor")
+    return reconstruct_svd_quant(selected)
 
-    print("Returning svd 099 fp8 tensor")
-    return reconstruct_svd_fp8(selected)
+    # print("Returning svd 099 fp8 tensor")
+    # return reconstruct_svd_fp8(selected)
 
     # print("Returning int4 tensor")
     # return reconstruct_uint4_quant(selected)
