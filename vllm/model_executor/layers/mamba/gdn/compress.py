@@ -5,6 +5,14 @@ from .quantization import mixed_precision_companding_update_V_reconstruction
 
 _compression_rate_total = 0.0
 _compression_rate_count = 0
+_retained_rank_histogram: dict[int, int] = {}
+
+
+def _record_retained_rank(retained_rank: int) -> None:
+    _retained_rank_histogram[retained_rank] = (
+        _retained_rank_histogram.get(retained_rank, 0) + 1
+    )
+    print(f"retained_rank_histogram={dict(sorted(_retained_rank_histogram.items()))}")
 
 
 def _record_compression_rate(name: str, compression_rate: float) -> None:
@@ -24,21 +32,29 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     
     # print("Returning random tensor")
     # return torch.nn.functional.normalize(torch.randn_like(selected), dim=-1)
+
     # print("Returning all-zero tensor")
     # return torch.zeros_like(selected)
+
     # print("Returning original tensor")
     # return selected
+
     # print("Returning hadamard-int2 tensor")
     # return reconstruct_hadamard_quant(selected)
-    print("Returning svd + quant tensor")
-    return reconstruct_svd_quant(selected)
+
+    # print("Returning svd + quant tensor")
+    # return reconstruct_svd_quant(selected)
+
+    print("Returning svd fp8 tensor")
+    return reconstruct_svd_fp8(selected)
+
     # print("Returning int4 tensor")
     # return reconstruct_uint4_quant(selected)
 
 def reconstruct_kimi(selected: torch.Tensor) -> torch.Tensor:
     print("Reconstructing Kimi tensor")
     return reconstruct_hadamard_quant(selected)
-    # return reconstruct_svd_quant(selected)
+    # return reconstruct_svd_fp8(selected)
     # return reconstruct_int8_quant(selected)
     # return reconstruct_uint4_quant(selected)
 
@@ -135,6 +151,7 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
             vh_q = vh[:retained_rank, :].to(torch.float8_e4m3fn).to(source.dtype)
             reconstructed = mixed_precision_companding_update_V_reconstruction(source, u_q, singular_values[:retained_rank], vh_q, retained_rank)
 
+    _record_retained_rank(retained_rank)
     rows, cols = source.shape
     source_bits = rows * cols * 32
     compressed_bits = retained_rank * rows * 4 + retained_rank * cols * 4 + retained_rank * 16 + retained_rank * 16 * 2 * 2
@@ -148,7 +165,7 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
 
 
 def reconstruct_svd_fp8(selected: torch.Tensor) -> torch.Tensor:
-    approx_rank_energy_threshold = 0.99
+    approx_rank_energy_threshold = 0.999
     source = selected.float()
 
     if source.ndim != 2:
@@ -177,6 +194,7 @@ def reconstruct_svd_fp8(selected: torch.Tensor) -> torch.Tensor:
                 )
                 + 1
             )
+            
             u_q = u[:, :retained_rank].to(torch.float8_e4m3fn).to(source.dtype)
             vh_q = vh[:retained_rank, :].to(torch.float8_e4m3fn).to(source.dtype)
             reconstructed = (
@@ -185,6 +203,7 @@ def reconstruct_svd_fp8(selected: torch.Tensor) -> torch.Tensor:
                 @ vh_q
             )
 
+    _record_retained_rank(retained_rank)
     rows, cols = source.shape
     source_bits = rows * cols * 32
     compressed_bits = retained_rank * rows * 8 + retained_rank * cols * 8 + retained_rank * 16
