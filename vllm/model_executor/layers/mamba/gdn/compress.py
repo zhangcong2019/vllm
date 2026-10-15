@@ -36,6 +36,8 @@ def _print_frobenius_error(source: torch.Tensor, reconstructed: torch.Tensor) ->
         error_percent = (100 * error_norm / reference_norm).item()
     print(f"frobenius_error={error_percent:.4g}%, absolute error={error_norm.item():.4g}")
 
+DEFAULT_APPROX_RANK_ENERGY_THRESHOLD = 0.997
+DEFAULT_AVG_BITS = 5.0
 
 def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     print("Reconstructing Qwen tensor")
@@ -73,6 +75,7 @@ def reconstruct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
     reconstructed = hadamard.hadamard_int2_dequantize(q, scale, zero_point)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("hadamard", 2.0 / 32.0)
+    _print_frobenius_error(selected.float(), reconstructed)
     return selected
 
 
@@ -86,6 +89,7 @@ def reconstruct_fp8_quant(selected: torch.Tensor) -> torch.Tensor:
     reconstructed = fp8.float() / scale
 
     _record_compression_rate("fp8", 8.0 / 32.0)
+    _print_frobenius_error(source, reconstructed)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
@@ -108,6 +112,7 @@ def reconstruct_int8_quant(selected: torch.Tensor) -> torch.Tensor:
     reconstructed = (q_int8.float() - zero_point) * scale
 
     _record_compression_rate("int8", 8.0 / 32.0)
+    _print_frobenius_error(source, reconstructed)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
@@ -123,12 +128,13 @@ def reconstruct_uint4_quant(selected: torch.Tensor) -> torch.Tensor:
     reconstructed = (q_uint4 - zero_point) * scale
 
     _record_compression_rate("uint4", 4.0 / 32.0)
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
+    _print_frobenius_error(source, reconstructed)
+    # selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 
 def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
-    approx_rank_energy_threshold = 0.99
+    approx_rank_energy_threshold = DEFAULT_APPROX_RANK_ENERGY_THRESHOLD
     source = selected.float()
 
     if source.ndim != 2:
@@ -157,9 +163,16 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
                 )
                 + 1
             )
-            u_q = u[:, :retained_rank].to(torch.float8_e4m3fn).to(source.dtype)
-            vh_q = vh[:retained_rank, :].to(torch.float8_e4m3fn).to(source.dtype)
-            reconstructed = mixed_precision_companding_update_V_reconstruction(source, u_q, singular_values[:retained_rank], vh_q, retained_rank)
+            u_q = u[:, :retained_rank].to(source.dtype)
+            vh_q = vh[:retained_rank, :].to(source.dtype)
+
+            reconstructed_no_quant = (
+                u_q
+                @ torch.diag(singular_values[:retained_rank].to(torch.float16).to(source.dtype))
+                @ vh_q
+            )
+
+            reconstructed = mixed_precision_companding_update_V_reconstruction(source, u_q, singular_values[:retained_rank], vh_q, retained_rank, avg_bits=DEFAULT_AVG_BITS)
 
     _record_retained_rank(retained_rank)
     rows, cols = source.shape
@@ -168,6 +181,10 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
     compression_rate = compressed_bits / source_bits
     print("average bit", compressed_bits / (rows * cols))
     _record_compression_rate("svd", compression_rate)
+    
+    print("Frobenius error for non-quantized reconstruction:", end=" ")
+    _print_frobenius_error(source, reconstructed_no_quant)
+    print("Frobenius error for quantized reconstruction:", end=" ")
     _print_frobenius_error(source, reconstructed)
     print("retained rank:", retained_rank)
 
