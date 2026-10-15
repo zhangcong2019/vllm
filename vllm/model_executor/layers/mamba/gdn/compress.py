@@ -54,7 +54,7 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning hadamard-int2 tensor")
     # return reconstruct_hadamard_quant(selected)
 
-    print("Returning svd + quant tensor")
+    print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
     return reconstruct_svd_quant(selected)
 
     # print("Returning svd 099 fp8 tensor")
