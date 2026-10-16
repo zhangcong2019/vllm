@@ -875,8 +875,8 @@ def mixed_precision_companding_update_V_reconstruction(
     s_r = s[:r]
 
     t0 = time.perf_counter()
-    if r == 1:
-        avg_bits = avg_bits * 1.28 # increase about 2% total bits
+    if r < 6:
+        avg_bits = avg_bits * 1.3 * (6.0 - r) / 5.0 # increase about 2% total bits
     bits = allocate_bits_by_singular_value(s_r, avg_bits)
     hadamard_U = hadamard_matrix(U_r.shape[0], dtype=U_r.dtype, device=U_r.device)
     hadamard_V = hadamard_matrix(V_r.shape[0], dtype=V_r.dtype, device=V_r.device)

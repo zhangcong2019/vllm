@@ -36,8 +36,8 @@ def _print_frobenius_error(source: torch.Tensor, reconstructed: torch.Tensor) ->
         error_percent = (100 * error_norm / reference_norm).item()
     print(f"frobenius_error={error_percent:.4g}%, absolute error={error_norm.item():.4g}")
 
-DEFAULT_APPROX_RANK_ENERGY_THRESHOLD = 0.997
-DEFAULT_AVG_BITS = 5.0
+DEFAULT_APPROX_RANK_ENERGY_THRESHOLD = 0.99
+DEFAULT_AVG_BITS = 4
 
 def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     print("Reconstructing Qwen tensor")
@@ -173,11 +173,13 @@ def reconstruct_svd_quant(selected: torch.Tensor) -> torch.Tensor:
             )
 
             reconstructed = mixed_precision_companding_update_V_reconstruction(source, u_q, singular_values[:retained_rank], vh_q, retained_rank, avg_bits=DEFAULT_AVG_BITS)
+            # if float(retained_rank) > 20.5:
+            #     reconstructed = reconstructed_no_quant
 
     _record_retained_rank(retained_rank)
     rows, cols = source.shape
     source_bits = rows * cols * 32
-    compressed_bits = retained_rank * rows * 4 + retained_rank * cols * 4 + retained_rank * 16 + retained_rank * 16 * 2 * 2
+    compressed_bits = retained_rank * rows * DEFAULT_AVG_BITS + retained_rank * cols * DEFAULT_AVG_BITS + retained_rank * 16 + retained_rank * 16 * 2 * 2
     compression_rate = compressed_bits / source_bits
     print("average bit", compressed_bits / (rows * cols))
     _record_compression_rate("svd", compression_rate)
