@@ -63,12 +63,35 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning int4 tensor")
     # return reconstruct_uint4_quant(selected)
 
-def reconstruct_kimi(selected: torch.Tensor) -> torch.Tensor:
+def reconstruct_kimi_head(selected: torch.Tensor) -> torch.Tensor:
     print("Reconstructing Kimi tensor")
-    return reconstruct_hadamard_quant(selected)
+
+    # print("Returning random tensor")
+    # return torch.nn.functional.normalize(torch.randn_like(selected), dim=-1)
+
+    # print("Returning all-zero tensor")
+    # return torch.zeros_like(selected)
+
+    # print("Returning original tensor")
+    # return selected
+
+    # print("Returning hadamard-int2 tensor")
+    # return reconstruct_hadamard_quant(selected)
+
+    print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
+    return reconstruct_svd_quant(selected)
+
+    # print("Returning svd 099 fp8 tensor")
     # return reconstruct_svd_fp8(selected)
-    # return reconstruct_int8_quant(selected)
+
+    # print("Returning int4 tensor")
     # return reconstruct_uint4_quant(selected)
+def reconstruct_kimi(selected: torch.Tensor) -> torch.Tensor:
+    output = selected.clone()
+    for batch_idx in range(selected.shape[0]):
+        for head_idx in range(selected.shape[1]):
+            output[batch_idx, head_idx] = reconstruct_kimi_head(selected[batch_idx, head_idx])
+    return output
 
 def reconstruct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
     q, scale, zero_point = hadamard.hadamard_int2_quantize(selected)
