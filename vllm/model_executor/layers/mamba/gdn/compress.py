@@ -51,14 +51,23 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning original tensor")
     # return selected
 
-    print("Returning hadamard-int2 tensor")
-    return reconstruct_hadamard_quant(selected)
-
-    # print("Returning turbo-int2 tensor")
-    # return reconstruct_turbo_quant(selected)
-
     # print("Returning RTN int2 tensor")
     # return reconstruct_int2_quant(selected)
+
+    # print("Returning hadamard-int2 tensor")
+    # return reconstruct_hadamard_int2_quant(selected)
+
+    # print("Returning turbo-int2 tensor")
+    # return reconstruct_turbo_int2_quant(selected)
+
+    print("Returning RTN int1 tensor")
+    return reconstruct_int1_quant(selected)
+
+    print("Returning hadamard-int1 tensor")
+    return reconstruct_hadamard_int1_quant(selected)
+
+    print("Returning turbo-int1 tensor")
+    return reconstruct_turbo_int1_quant(selected)
 
     # print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
     # return reconstruct_svd_quant(selected)
@@ -82,10 +91,10 @@ def reconstruct_kimi_head(selected: torch.Tensor) -> torch.Tensor:
     # return selected
 
     # print("Returning hadamard-int2 tensor")
-    # return reconstruct_hadamard_quant(selected)
+    # return reconstruct_hadamard_int2_quant(selected)
 
     print("Returning turbo-int2 tensor")
-    return reconstruct_turbo_quant(selected)
+    return reconstruct_turbo_int2_quant(selected)
 
     # print("Returning RTN int2 tensor")
     # return reconstruct_int2_quant(selected)
@@ -105,7 +114,7 @@ def reconstruct_kimi(selected: torch.Tensor) -> torch.Tensor:
             output[batch_idx, head_idx] = reconstruct_kimi_head(selected[batch_idx, head_idx])
     return output
 
-def reconstruct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
+def reconstruct_hadamard_int2_quant(selected: torch.Tensor) -> torch.Tensor:
     q, scale, zero_point = hadamard.hadamard_int2_quantize(selected)
     reconstructed = hadamard.hadamard_int2_dequantize(q, scale, zero_point)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
@@ -113,11 +122,27 @@ def reconstruct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
     _print_frobenius_error(selected.float(), reconstructed)
     return selected
 
-def reconstruct_turbo_quant(selected: torch.Tensor) -> torch.Tensor:
+def reconstruct_hadamard_int1_quant(selected: torch.Tensor) -> torch.Tensor:
+    q, scale, zero_point = hadamard.hadamard_int1_quantize(selected)
+    reconstructed = hadamard.hadamard_int1_dequantize(q, scale, zero_point)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
+    _record_compression_rate("hadamard-int1", 1.0 / 32.0)
+    _print_frobenius_error(selected.float(), reconstructed)
+    return selected
+
+def reconstruct_turbo_int2_quant(selected: torch.Tensor) -> torch.Tensor:
     q, centroids = hadamard.turbo_int2_quantize(selected)
     reconstructed = hadamard.turbo_int2_dequantize(q, centroids)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("turbo", 2.0 / 32.0)
+    _print_frobenius_error(selected.float(), reconstructed)
+    return selected
+
+def reconstruct_turbo_int1_quant(selected: torch.Tensor) -> torch.Tensor:
+    q, centroids = hadamard.turbo_int1_quantize(selected)
+    reconstructed = hadamard.turbo_int1_dequantize(q, centroids)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
+    _record_compression_rate("turbo-int1", 1.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
     return selected
 
@@ -188,6 +213,24 @@ def reconstruct_int2_quant(selected: torch.Tensor) -> torch.Tensor:
     _record_compression_rate("int2", 2.0 / 32.0)
     _print_frobenius_error(source, reconstructed)
     # selected.copy_(reconstructed.to(dtype=selected.dtype))
+    return selected
+
+
+def reconstruct_int1_quant(selected: torch.Tensor) -> torch.Tensor:
+    source = selected.float()
+    qmin, qmax = 0.0, 1.0
+    x_min = source.amin(dim=-1, keepdim=True)
+    x_max = source.amax(dim=-1, keepdim=True)
+    scale = ((x_max - x_min) / (qmax - qmin)).clamp(min=1e-12)
+    # Keep zero_point unrounded: with only 2 levels, rounding it would force
+    # 0 to be representable and collapse one level onto 0.
+    zero_point = qmin - x_min / scale
+    q_int1 = (source / scale + zero_point).round().clamp(qmin, qmax)
+    reconstructed = (q_int1 - zero_point) * scale
+
+    _record_compression_rate("int1", 1.0 / 32.0)
+    _print_frobenius_error(source, reconstructed)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 
