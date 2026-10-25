@@ -78,8 +78,14 @@ def reconstruct_kimi_head(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning hadamard-int2 tensor")
     # return reconstruct_hadamard_quant(selected)
 
-    print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
-    return reconstruct_svd_quant(selected)
+    print("Returning turbo-int2 tensor")
+    return reconstruct_turbo_quant(selected)
+
+    # print("Returning RTN int2 tensor")
+    # return reconstruct_int2_quant(selected)
+
+    # print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
+    # return reconstruct_svd_quant(selected)
 
     # print("Returning svd 099 fp8 tensor")
     # return reconstruct_svd_fp8(selected)
@@ -101,12 +107,19 @@ def reconstruct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
     _print_frobenius_error(selected.float(), reconstructed)
     return selected
 
+def reconstruct_turbo_quant(selected: torch.Tensor) -> torch.Tensor:
+    q, scale, zero_point = hadamard.turbo_int2_quantize(selected)
+    reconstructed = hadamard.turbo_int2_dequantize(q, scale, zero_point)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
+    _record_compression_rate("turbo", 2.0 / 32.0)
+    _print_frobenius_error(selected.float(), reconstructed)
+    return selected
 
 def reconstruct_fp8_quant(selected: torch.Tensor) -> torch.Tensor:
     source = selected.float()
     fp8_dtype = torch.float8_e4m3fn
     finfo = torch.finfo(fp8_dtype)
-    amax = source.abs().max().clamp(min=1e-12)
+    amax = source.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12)
     scale = finfo.max / amax
     fp8 = (source * scale).clamp(finfo.min, finfo.max).to(fp8_dtype)
     reconstructed = fp8.float() / scale
@@ -120,8 +133,8 @@ def reconstruct_fp8_quant(selected: torch.Tensor) -> torch.Tensor:
 def reconstruct_int8_quant(selected: torch.Tensor) -> torch.Tensor:
     source = selected.float()
     int8_info = torch.iinfo(torch.int8)
-    x_min = source.min()
-    x_max = source.max()
+    x_min = source.amin(dim=-1, keepdim=True)
+    x_max = source.amax(dim=-1, keepdim=True)
     scale = ((x_max - x_min) / float(int8_info.max - int8_info.min)).clamp(min=1e-12)
     zero_point = (int8_info.min - x_min / scale).round().clamp(
         int8_info.min, int8_info.max
@@ -143,14 +156,30 @@ def reconstruct_int8_quant(selected: torch.Tensor) -> torch.Tensor:
 def reconstruct_uint4_quant(selected: torch.Tensor) -> torch.Tensor:
     source = selected.float()
     qmin, qmax = 0.0, 15.0
-    x_min = source.min()
-    x_max = source.max()
+    x_min = source.amin(dim=-1, keepdim=True)
+    x_max = source.amax(dim=-1, keepdim=True)
     scale = ((x_max - x_min) / (qmax - qmin)).clamp(min=1e-12)
     zero_point = (qmin - x_min / scale).round().clamp(qmin, qmax)
     q_uint4 = (source / scale + zero_point).round().clamp(qmin, qmax)
     reconstructed = (q_uint4 - zero_point) * scale
 
     _record_compression_rate("uint4", 4.0 / 32.0)
+    _print_frobenius_error(source, reconstructed)
+    # selected.copy_(reconstructed.to(dtype=selected.dtype))
+    return selected
+
+
+def reconstruct_int2_quant(selected: torch.Tensor) -> torch.Tensor:
+    source = selected.float()
+    qmin, qmax = 0.0, 3.0
+    x_min = source.amin(dim=-1, keepdim=True)
+    x_max = source.amax(dim=-1, keepdim=True)
+    scale = ((x_max - x_min) / (qmax - qmin)).clamp(min=1e-12)
+    zero_point = (qmin - x_min / scale).round().clamp(qmin, qmax)
+    q_int2 = (source / scale + zero_point).round().clamp(qmin, qmax)
+    reconstructed = (q_int2 - zero_point) * scale
+
+    _record_compression_rate("int2", 2.0 / 32.0)
     _print_frobenius_error(source, reconstructed)
     # selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected

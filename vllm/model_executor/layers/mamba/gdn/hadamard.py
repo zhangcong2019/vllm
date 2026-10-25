@@ -128,6 +128,72 @@ def asymmetric_int2_dequantize(
 
     return q * scale + zero_point
 
+
+def kmeans_int2_quantize(
+    x: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fit four asymmetric centroids per final-dimension vector.
+
+    Return signed INT2 labels and a four-entry codebook of absolute centroid
+    values. Unlike affine INT2, the codebook is not a scalar scale; use
+    kmeans_int2_dequantize to reconstruct values.
+    """
+    if not torch.is_floating_point(x):
+        raise TypeError("kmeans_int2_quantize requires a floating-point tensor")
+    if x.ndim < 1:
+        raise ValueError("kmeans_int2_quantize requires at least one dimension")
+    if x.shape[-1] == 0:
+        raise ValueError("the final dimension must be nonempty")
+
+    # Accumulate low-precision inputs in FP32 to stabilize centroid updates.
+    values = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    fractions = torch.linspace(0, 1, 4, device=x.device, dtype=values.dtype)
+    minimum = values.amin(dim=-1, keepdim=True)
+    maximum = values.amax(dim=-1, keepdim=True)
+    centroids = minimum + (maximum - minimum) * fractions
+
+    for _ in range(30):
+        labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
+        sums = torch.zeros_like(centroids).scatter_add_(-1, labels, values)
+        counts = torch.zeros_like(centroids).scatter_add_(
+            -1, labels, torch.ones_like(values)
+        )
+        # Retain empty clusters, including those in constant input vectors.
+        updated = torch.where(counts > 0, sums / counts.clamp_min(1), centroids)
+        if torch.equal(updated, centroids):
+            break
+        centroids = updated
+
+    labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
+    q = (labels - 2).to(torch.int8)
+    return q, centroids
+
+
+def kmeans_int2_dequantize(
+    q: torch.Tensor, codebook: torch.Tensor
+) -> torch.Tensor:
+    """Reconstruct signed INT2 labels using absolute per-vector codebooks."""
+    if q.dtype != torch.int8:
+        raise TypeError("kmeans_int2_dequantize requires an INT8 quantized tensor")
+
+    return codebook.gather(-1, q.long() + 2)
+
+
+def turbo_int2_quantize(
+    x: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply normalized FWHT, then quantize each final-dimension vector."""
+    return kmeans_int2_quantize(normalized_fwht(x))
+
+def turbo_int2_dequantize(
+    q: torch.Tensor, codebook: torch.Tensor
+) -> torch.Tensor:
+    """Reconstruct signed INT2 labels using their per-vector codebooks."""
+    if q.dtype != torch.int8:
+        raise TypeError("turbo_int2_dequantize requires an INT8 quantized tensor")
+
+    return inverse_normalized_fwht(kmeans_int2_dequantize(q, codebook))
+
 def hadamard_int2_quantize(
     x: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
