@@ -51,11 +51,17 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning original tensor")
     # return selected
 
-    # print("Returning hadamard-int2 tensor")
-    # return reconstruct_hadamard_quant(selected)
+    print("Returning hadamard-int2 tensor")
+    return reconstruct_hadamard_quant(selected)
 
-    print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
-    return reconstruct_svd_quant(selected)
+    # print("Returning turbo-int2 tensor")
+    # return reconstruct_turbo_quant(selected)
+
+    # print("Returning RTN int2 tensor")
+    # return reconstruct_int2_quant(selected)
+
+    # print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
+    # return reconstruct_svd_quant(selected)
 
     # print("Returning svd 099 fp8 tensor")
     # return reconstruct_svd_fp8(selected)
@@ -108,8 +114,8 @@ def reconstruct_hadamard_quant(selected: torch.Tensor) -> torch.Tensor:
     return selected
 
 def reconstruct_turbo_quant(selected: torch.Tensor) -> torch.Tensor:
-    q, scale, zero_point = hadamard.turbo_int2_quantize(selected)
-    reconstructed = hadamard.turbo_int2_dequantize(q, scale, zero_point)
+    q, centroids = hadamard.turbo_int2_quantize(selected)
+    reconstructed = hadamard.turbo_int2_dequantize(q, centroids)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("turbo", 2.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
