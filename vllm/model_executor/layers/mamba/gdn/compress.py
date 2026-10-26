@@ -48,8 +48,8 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning all-zero tensor")
     # return torch.zeros_like(selected)
 
-    # print("Returning original tensor")
-    # return selected
+    print("Returning original tensor")
+    return selected
 
     # print("Returning RTN int2 tensor")
     # return reconstruct_int2_quant(selected)
@@ -60,14 +60,14 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning turbo-int2 tensor")
     # return reconstruct_turbo_int2_quant(selected)
 
-    print("Returning RTN int1 tensor")
-    return reconstruct_int1_quant(selected)
+    # print("Returning RTN int1 tensor")
+    # return reconstruct_int1_quant(selected)
 
-    print("Returning hadamard-int1 tensor")
-    return reconstruct_hadamard_int1_quant(selected)
+    # print("Returning hadamard-int1 tensor")
+    # return reconstruct_hadamard_int1_quant(selected)
 
-    print("Returning turbo-int1 tensor")
-    return reconstruct_turbo_int1_quant(selected)
+    # print("Returning turbo-int1 tensor")
+    # return reconstruct_turbo_int1_quant(selected)
 
     # print("Returning svd + quant tensor, avg_bits=", DEFAULT_AVG_BITS, "rank_energy_threshold=", DEFAULT_APPROX_RANK_ENERGY_THRESHOLD)
     # return reconstruct_svd_quant(selected)
@@ -117,33 +117,33 @@ def reconstruct_kimi(selected: torch.Tensor) -> torch.Tensor:
 def reconstruct_hadamard_int2_quant(selected: torch.Tensor) -> torch.Tensor:
     q, scale, zero_point = hadamard.hadamard_int2_quantize(selected)
     reconstructed = hadamard.hadamard_int2_dequantize(q, scale, zero_point)
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("hadamard", 2.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 def reconstruct_hadamard_int1_quant(selected: torch.Tensor) -> torch.Tensor:
     q, scale, zero_point = hadamard.hadamard_int1_quantize(selected)
     reconstructed = hadamard.hadamard_int1_dequantize(q, scale, zero_point)
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("hadamard-int1", 1.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 def reconstruct_turbo_int2_quant(selected: torch.Tensor) -> torch.Tensor:
     q, centroids = hadamard.turbo_int2_quantize(selected)
     reconstructed = hadamard.turbo_int2_dequantize(q, centroids)
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("turbo", 2.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 def reconstruct_turbo_int1_quant(selected: torch.Tensor) -> torch.Tensor:
     q, centroids = hadamard.turbo_int1_quantize(selected)
     reconstructed = hadamard.turbo_int1_dequantize(q, centroids)
-    selected.copy_(reconstructed.to(dtype=selected.dtype))
     _record_compression_rate("turbo-int1", 1.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 def reconstruct_fp8_quant(selected: torch.Tensor) -> torch.Tensor:
@@ -196,7 +196,7 @@ def reconstruct_uint4_quant(selected: torch.Tensor) -> torch.Tensor:
 
     _record_compression_rate("uint4", 4.0 / 32.0)
     _print_frobenius_error(source, reconstructed)
-    # selected.copy_(reconstructed.to(dtype=selected.dtype))
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 
@@ -212,7 +212,7 @@ def reconstruct_int2_quant(selected: torch.Tensor) -> torch.Tensor:
 
     _record_compression_rate("int2", 2.0 / 32.0)
     _print_frobenius_error(source, reconstructed)
-    # selected.copy_(reconstructed.to(dtype=selected.dtype))
+    selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 
