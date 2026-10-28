@@ -48,8 +48,8 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning all-zero tensor")
     # return torch.zeros_like(selected)
 
-    print("Returning original tensor")
-    return selected
+    # print("Returning original tensor")
+    # return selected
 
     # print("Returning RTN int2 tensor")
     # return reconstruct_int2_quant(selected)
@@ -63,8 +63,8 @@ def reconstruct_qwen(selected: torch.Tensor) -> torch.Tensor:
     # print("Returning RTN int1 tensor")
     # return reconstruct_int1_quant(selected)
 
-    # print("Returning hadamard-int1 tensor")
-    # return reconstruct_hadamard_int1_quant(selected)
+    print("Returning hadamard-int1 tensor")
+    return reconstruct_hadamard_int1_quant(selected)
 
     # print("Returning turbo-int1 tensor")
     # return reconstruct_turbo_int1_quant(selected)
@@ -222,6 +222,7 @@ def reconstruct_int1_quant(selected: torch.Tensor) -> torch.Tensor:
     x_min = source.amin(dim=-1, keepdim=True)
     x_max = source.amax(dim=-1, keepdim=True)
     scale = ((x_max - x_min) / (qmax - qmin)).clamp(min=1e-12)
+    print("###reconstruct_int1_quant: scale.shape =", scale.shape)
     # Keep zero_point unrounded: with only 2 levels, rounding it would force
     # 0 to be representable and collapse one level onto 0.
     zero_point = qmin - x_min / scale

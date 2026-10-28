@@ -4,6 +4,16 @@ import math
 
 import torch
 
+_LLOYD_MAX_INT4_LEVELS_STD = [
+    -2.7344, -2.0688, -1.6178, -1.2552, -0.9413, -0.6564, -0.3881, -0.1280,
+    +0.1278, +0.3872, +0.6558, +0.9421, +1.2556, +1.6189, +2.0750, +2.7430,
+]
+_LLOYD_MAX_INT2_LEVELS_STD = [
+    -1.5100, -0.4527, +0.4527, +1.5100,
+]
+_LLOYD_MAX_INT1_LEVELS_STD = [
+    -0.7976, +0.7976,
+]
 
 def normalized_fwht(x: torch.Tensor) -> torch.Tensor:
     """Apply the orthonormal Walsh-Hadamard transform over the final dimension."""
@@ -147,6 +157,7 @@ def asymmetric_int1_quantize(
     scale = torch.where(constant, torch.ones_like(raw_scale), raw_scale)
     zero_point = torch.where(constant, minimum, minimum + scale)
     q = torch.round((x - zero_point) / scale).clamp(-1, 0).to(torch.int8)
+    print("###asymmetric_int1_quantize: scale.shape =", scale.shape)
     return q, scale, zero_point
 
 
@@ -163,11 +174,12 @@ def asymmetric_int1_dequantize(
 def kmeans_int2_quantize(
     x: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fit four asymmetric centroids per final-dimension vector.
+    """Quantize each final-dimension vector using offline Lloyd-Max levels.
 
-    Return signed INT2 labels and a four-entry codebook of absolute centroid
-    values. Unlike affine INT2, the codebook is not a scalar scale; use
-    kmeans_int2_dequantize to reconstruct values.
+    Assume zero mean and a standard deviation of 1 / sqrt(x.shape[-1]).
+    Scale the standard-normal levels without computing input statistics or
+    running online k-means. Return signed INT2 labels and a four-entry codebook
+    of absolute centroid values; use kmeans_int2_dequantize to reconstruct values.
     """
     if not torch.is_floating_point(x):
         raise TypeError("kmeans_int2_quantize requires a floating-point tensor")
@@ -176,24 +188,10 @@ def kmeans_int2_quantize(
     if x.shape[-1] == 0:
         raise ValueError("the final dimension must be nonempty")
 
-    # Accumulate low-precision inputs in FP32 to stabilize centroid updates.
     values = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
-    fractions = torch.linspace(0, 1, 4, device=x.device, dtype=values.dtype)
-    minimum = values.amin(dim=-1, keepdim=True)
-    maximum = values.amax(dim=-1, keepdim=True)
-    centroids = minimum + (maximum - minimum) * fractions
-
-    for _ in range(30):
-        labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
-        sums = torch.zeros_like(centroids).scatter_add_(-1, labels, values)
-        counts = torch.zeros_like(centroids).scatter_add_(
-            -1, labels, torch.ones_like(values)
-        )
-        # Retain empty clusters, including those in constant input vectors.
-        updated = torch.where(counts > 0, sums / counts.clamp_min(1), centroids)
-        if torch.equal(updated, centroids):
-            break
-        centroids = updated
+    levels = values.new_tensor(_LLOYD_MAX_INT2_LEVELS_STD)
+    std = 128 ** -0.5
+    centroids = (std * levels).expand(*x.shape[:-1], 4)
 
     labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
     q = (labels - 2).to(torch.int8)
@@ -203,9 +201,15 @@ def kmeans_int2_quantize(
 def kmeans_int2_dequantize(
     q: torch.Tensor, codebook: torch.Tensor
 ) -> torch.Tensor:
-    """Reconstruct signed INT2 labels using absolute per-vector codebooks."""
+    """Reconstruct -2/-1/0/1 labels using the scaled offline Lloyd-Max codebook.
+
+    The four levels are nonuniform, so reconstruct by lookup rather than an
+    affine mapping.
+    """
     if q.dtype != torch.int8:
         raise TypeError("kmeans_int2_dequantize requires an INT8 quantized tensor")
+    if torch.any((q < -2) | (q > 1)):
+        raise ValueError("kmeans_int2_dequantize requires labels in {-2, -1, 0, 1}")
 
     return codebook.gather(-1, q.long() + 2)
 
@@ -229,10 +233,12 @@ def turbo_int2_dequantize(
 def kmeans_int1_quantize(
     x: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fit two asymmetric centroids per final-dimension vector.
+    """Quantize each final-dimension vector using offline Lloyd-Max levels.
 
-    Return signed INT1 labels and a two-entry codebook of absolute centroid
-    values; use kmeans_int1_dequantize to reconstruct values.
+    Assume zero mean and a standard deviation of 1 / sqrt(x.shape[-1]).
+    Scale the standard-normal levels without computing input statistics or
+    running online k-means. Return signed INT1 labels and a two-entry codebook
+    of absolute centroid values; use kmeans_int1_dequantize to reconstruct values.
     """
     if not torch.is_floating_point(x):
         raise TypeError("kmeans_int1_quantize requires a floating-point tensor")
@@ -241,24 +247,10 @@ def kmeans_int1_quantize(
     if x.shape[-1] == 0:
         raise ValueError("the final dimension must be nonempty")
 
-    # Accumulate low-precision inputs in FP32 to stabilize centroid updates.
     values = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
-    fractions = torch.linspace(0, 1, 2, device=x.device, dtype=values.dtype)
-    minimum = values.amin(dim=-1, keepdim=True)
-    maximum = values.amax(dim=-1, keepdim=True)
-    centroids = minimum + (maximum - minimum) * fractions
-
-    for _ in range(30):
-        labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
-        sums = torch.zeros_like(centroids).scatter_add_(-1, labels, values)
-        counts = torch.zeros_like(centroids).scatter_add_(
-            -1, labels, torch.ones_like(values)
-        )
-        # Retain empty clusters, including those in constant input vectors.
-        updated = torch.where(counts > 0, sums / counts.clamp_min(1), centroids)
-        if torch.equal(updated, centroids):
-            break
-        centroids = updated
+    levels = values.new_tensor(_LLOYD_MAX_INT1_LEVELS_STD)
+    std = 128 ** -0.5
+    centroids = (std * levels).expand(*x.shape[:-1], 2)
 
     labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
     q = (labels - 1).to(torch.int8)
@@ -268,11 +260,19 @@ def kmeans_int1_quantize(
 def kmeans_int1_dequantize(
     q: torch.Tensor, codebook: torch.Tensor
 ) -> torch.Tensor:
-    """Reconstruct signed INT1 labels using absolute per-vector codebooks."""
+    """Reconstruct -1/0 labels using the scaled offline Lloyd-Max codebook.
+
+    Map -1 to the lower level and 0 to the upper level directly, retaining
+    the existing two-entry codebook interface.
+    """
     if q.dtype != torch.int8:
         raise TypeError("kmeans_int1_dequantize requires an INT8 quantized tensor")
+    if torch.any((q != -1) & (q != 0)):
+        raise ValueError("kmeans_int1_dequantize requires labels in {-1, 0}")
 
-    return codebook.gather(-1, q.long() + 1)
+    lower = codebook[..., :1]
+    upper = codebook[..., 1:]
+    return q.to(codebook.dtype) * (upper - lower) + upper
 
 
 def turbo_int1_quantize(
