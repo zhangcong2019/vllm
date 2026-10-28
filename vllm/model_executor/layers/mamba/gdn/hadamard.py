@@ -173,13 +173,14 @@ def asymmetric_int1_dequantize(
 
 def kmeans_int2_quantize(
     x: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Quantize each final-dimension vector using offline Lloyd-Max levels.
 
-    Assume zero mean and a standard deviation of 1 / sqrt(x.shape[-1]).
-    Scale the standard-normal levels without computing input statistics or
-    running online k-means. Return signed INT2 labels and a four-entry codebook
-    of absolute centroid values; use kmeans_int2_dequantize to reconstruct values.
+    Normalize each vector to unit L2 norm so that, assuming zero mean, its
+    entries have a standard deviation of 1 / sqrt(x.shape[-1]). Scale the
+    standard-normal levels without running online k-means. Return signed INT2
+    labels, a four-entry codebook of unit-norm centroid values, and the
+    per-vector L2 norm as scale; use kmeans_int2_dequantize to reconstruct values.
     """
     if not torch.is_floating_point(x):
         raise TypeError("kmeans_int2_quantize requires a floating-point tensor")
@@ -189,56 +190,61 @@ def kmeans_int2_quantize(
         raise ValueError("the final dimension must be nonempty")
 
     values = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    scale = values.norm(dim=-1, keepdim=True)
+    zero = scale == 0
+    normalized = values / torch.where(zero, torch.ones_like(scale), scale)
+
     levels = values.new_tensor(_LLOYD_MAX_INT2_LEVELS_STD)
-    std = 128 ** -0.5
+    std = x.shape[-1] ** -0.5
     centroids = (std * levels).expand(*x.shape[:-1], 4)
 
-    labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
+    labels = (normalized.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
     q = (labels - 2).to(torch.int8)
-    return q, centroids
+    return q, centroids, scale
 
 
 def kmeans_int2_dequantize(
-    q: torch.Tensor, codebook: torch.Tensor
+    q: torch.Tensor, codebook: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
     """Reconstruct -2/-1/0/1 labels using the scaled offline Lloyd-Max codebook.
 
     The four levels are nonuniform, so reconstruct by lookup rather than an
-    affine mapping.
+    affine mapping, then restore the per-vector L2 norm recorded as scale.
     """
     if q.dtype != torch.int8:
         raise TypeError("kmeans_int2_dequantize requires an INT8 quantized tensor")
     if torch.any((q < -2) | (q > 1)):
         raise ValueError("kmeans_int2_dequantize requires labels in {-2, -1, 0, 1}")
 
-    return codebook.gather(-1, q.long() + 2)
+    return codebook.gather(-1, q.long() + 2) * scale
 
 
 def turbo_int2_quantize(
     x: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Apply normalized FWHT, then quantize each final-dimension vector."""
     return kmeans_int2_quantize(normalized_fwht(x))
 
 def turbo_int2_dequantize(
-    q: torch.Tensor, codebook: torch.Tensor
+    q: torch.Tensor, codebook: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
     """Reconstruct signed INT2 labels using their per-vector codebooks."""
     if q.dtype != torch.int8:
         raise TypeError("turbo_int2_dequantize requires an INT8 quantized tensor")
 
-    return inverse_normalized_fwht(kmeans_int2_dequantize(q, codebook))
+    return inverse_normalized_fwht(kmeans_int2_dequantize(q, codebook, scale))
 
 
 def kmeans_int1_quantize(
     x: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Quantize each final-dimension vector using offline Lloyd-Max levels.
 
-    Assume zero mean and a standard deviation of 1 / sqrt(x.shape[-1]).
-    Scale the standard-normal levels without computing input statistics or
-    running online k-means. Return signed INT1 labels and a two-entry codebook
-    of absolute centroid values; use kmeans_int1_dequantize to reconstruct values.
+    Normalize each vector to unit L2 norm so that, assuming zero mean, its
+    entries have a standard deviation of 1 / sqrt(x.shape[-1]). Scale the
+    standard-normal levels without running online k-means. Return signed INT1
+    labels, a two-entry codebook of unit-norm centroid values, and the per-vector
+    L2 norm as scale; use kmeans_int1_dequantize to reconstruct values.
     """
     if not torch.is_floating_point(x):
         raise TypeError("kmeans_int1_quantize requires a floating-point tensor")
@@ -248,22 +254,26 @@ def kmeans_int1_quantize(
         raise ValueError("the final dimension must be nonempty")
 
     values = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    scale = values.norm(dim=-1, keepdim=True)
+    zero = scale == 0
+    normalized = values / torch.where(zero, torch.ones_like(scale), scale)
+
     levels = values.new_tensor(_LLOYD_MAX_INT1_LEVELS_STD)
-    std = 128 ** -0.5
+    std = x.shape[-1] ** -0.5
     centroids = (std * levels).expand(*x.shape[:-1], 2)
 
-    labels = (values.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
+    labels = (normalized.unsqueeze(-1) - centroids.unsqueeze(-2)).abs().argmin(-1)
     q = (labels - 1).to(torch.int8)
-    return q, centroids
+    return q, centroids, scale
 
 
 def kmeans_int1_dequantize(
-    q: torch.Tensor, codebook: torch.Tensor
+    q: torch.Tensor, codebook: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
     """Reconstruct -1/0 labels using the scaled offline Lloyd-Max codebook.
 
-    Map -1 to the lower level and 0 to the upper level directly, retaining
-    the existing two-entry codebook interface.
+    Map -1 to the lower level and 0 to the upper level directly, then restore
+    the per-vector L2 norm recorded as scale.
     """
     if q.dtype != torch.int8:
         raise TypeError("kmeans_int1_dequantize requires an INT8 quantized tensor")
@@ -272,23 +282,23 @@ def kmeans_int1_dequantize(
 
     lower = codebook[..., :1]
     upper = codebook[..., 1:]
-    return q.to(codebook.dtype) * (upper - lower) + upper
+    return (q.to(codebook.dtype) * (upper - lower) + upper) * scale
 
 
 def turbo_int1_quantize(
     x: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Apply normalized FWHT, then quantize each final-dimension vector."""
     return kmeans_int1_quantize(normalized_fwht(x))
 
 def turbo_int1_dequantize(
-    q: torch.Tensor, codebook: torch.Tensor
+    q: torch.Tensor, codebook: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
     """Reconstruct signed INT1 labels using their per-vector codebooks."""
     if q.dtype != torch.int8:
         raise TypeError("turbo_int1_dequantize requires an INT8 quantized tensor")
 
-    return inverse_normalized_fwht(kmeans_int1_dequantize(q, codebook))
+    return inverse_normalized_fwht(kmeans_int1_dequantize(q, codebook, scale))
 
 def hadamard_int2_quantize(
     x: torch.Tensor,

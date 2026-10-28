@@ -131,16 +131,16 @@ def reconstruct_hadamard_int1_quant(selected: torch.Tensor) -> torch.Tensor:
     return selected
 
 def reconstruct_turbo_int2_quant(selected: torch.Tensor) -> torch.Tensor:
-    q, centroids = hadamard.turbo_int2_quantize(selected)
-    reconstructed = hadamard.turbo_int2_dequantize(q, centroids)
+    q, centroids, scale = hadamard.turbo_int2_quantize(selected)
+    reconstructed = hadamard.turbo_int2_dequantize(q, centroids, scale)
     _record_compression_rate("turbo", 2.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
     return selected
 
 def reconstruct_turbo_int1_quant(selected: torch.Tensor) -> torch.Tensor:
-    q, centroids = hadamard.turbo_int1_quantize(selected)
-    reconstructed = hadamard.turbo_int1_dequantize(q, centroids)
+    q, centroids, scale = hadamard.turbo_int1_quantize(selected)
+    reconstructed = hadamard.turbo_int1_dequantize(q, centroids, scale)
     _record_compression_rate("turbo-int1", 1.0 / 32.0)
     _print_frobenius_error(selected.float(), reconstructed)
     selected.copy_(reconstructed.to(dtype=selected.dtype))
